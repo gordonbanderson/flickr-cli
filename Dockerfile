@@ -1,4 +1,4 @@
-FROM php:7.2-rc-cli
+FROM php:7.0-cli
 ARG COMPOSER_AUTH
 
 ENV DEBIAN_FRONTEND noninteractive

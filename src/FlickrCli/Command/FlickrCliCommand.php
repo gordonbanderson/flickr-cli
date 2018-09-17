@@ -68,14 +68,15 @@ abstract class FlickrCliCommand extends Command
      */
     public function __construct($name = null)
     {
-        parent::__construct($name);
-
         $this->exit = 0;
         $this->logger = new NullLogger();
         $this->output = new NullOutput();
-        $this->configFilePath = 'config.yml';
+        $this->configFilePath = getcwd() . '/config.yml';
         $this->isConfigFileRequired = true;
         $this->config = [];
+
+        // Set variables before parent constructor so that they can be used in self::configure().
+        parent::__construct($name);
     }
 
     /**
@@ -92,6 +93,11 @@ abstract class FlickrCliCommand extends Command
     public function setExit(int $exit)
     {
         $this->exit = $exit;
+    }
+
+    public function incExit(int $inc = 1)
+    {
+        $this->exit += $inc;
     }
 
     /**
@@ -172,9 +178,10 @@ abstract class FlickrCliCommand extends Command
      */
     protected function configure()
     {
-        $this
-            ->addOption('config', 'c', InputOption::VALUE_OPTIONAL, 'Path to config file. Default: ./config.yml')//->addOption('log', 'l', InputOption::VALUE_OPTIONAL, 'Path to log directory. Default: ./log')
-        ;
+        $desc = "Path of the config file.\n"
+            . "Can also be set with the FLICKRCLI_CONFIG environment variable.\n"
+            . "Will default to current directory.";
+        $this->addOption('config', 'c', InputOption::VALUE_OPTIONAL, $desc, $this->configFilePath);
     }
 
     /**
@@ -220,10 +227,7 @@ abstract class FlickrCliCommand extends Command
                 $logLevel = Logger::WARNING;
         }
 
-        //$logFormatter = new LineFormatter("[%datetime%] %level_name%: %message%\n");
-
         $handler = new StreamHandler('php://stdout', $logLevel);
-        //$handler->setFormatter($logFormatter);
         $this->logger->pushHandler($handler);
     }
 
@@ -231,16 +235,15 @@ abstract class FlickrCliCommand extends Command
     {
         $input = $this->getInput();
 
-        if ($input->hasOption('config') && $input->getOption('config')) {
-            $configFilePath = $input->getOption('config');
-        } elseif ($envConfigFile = getenv('FLICKRCLI_CONFIG')) {
-            $configFilePath = $envConfigFile;
+        // Get the name of the config file from the CLI, or environment,
+        // or use the default (which is set in the constructor).
+        $cliConfigFile = $input->getOption('config');
+        $envConfigFile = getenv('FLICKRCLI_CONFIG');
+        if ($cliConfigFile) {
+            $this->configFilePath = $cliConfigFile;
+        } elseif ($envConfigFile) {
+            $this->configFilePath = $envConfigFile;
         }
-
-        if (!isset($configFilePath) || !$configFilePath) {
-            throw new RuntimeException('No config file path found.');
-        }
-        $this->configFilePath = $configFilePath;
 
         $filesystem = new Filesystem();
         if ($filesystem->exists($this->configFilePath)) {
@@ -263,7 +266,7 @@ abstract class FlickrCliCommand extends Command
         $this->getLogger()->debug(sprintf('Load configuration: %s', $this->getConfigFilePath()));
 
         /** @var string[][] $config */
-        $config = Yaml::parse($configFilePath);
+        $config = Yaml::parse(file_get_contents($configFilePath));
 
         if (!isset($config)
             || !isset($config['flickr'])
@@ -312,23 +315,27 @@ abstract class FlickrCliCommand extends Command
             return false;
         }
 
-        $consumerKey = $config['flickr']['consumer_key'];
-        if (!$consumerKey) {
+        if (isset($config['flickr']['consumer_key']) && $config['flickr']['consumer_key']) {
+            $consumerKey = $config['flickr']['consumer_key'];
+        } else {
             return false;
         }
 
-        $consumerSecret = $config['flickr']['consumer_secret'];
-        if (!$consumerSecret) {
+        if (isset($config['flickr']['consumer_secret']) && $config['flickr']['consumer_secret']) {
+            $consumerSecret = $config['flickr']['consumer_secret'];
+        } else {
             return false;
         }
 
-        $token = $config['flickr']['token'];
-        if (!$token) {
+        if (isset($config['flickr']['token']) && $config['flickr']['token']) {
+            $token = $config['flickr']['token'];
+        } else {
             return false;
         }
 
-        $tokenSecret = $config['flickr']['token_secret'];
-        if (!$tokenSecret) {
+        if (isset($config['flickr']['token_secret']) && $config['flickr']['token_secret']) {
+            $tokenSecret = $config['flickr']['token_secret'];
+        } else {
             return false;
         }
 
@@ -344,26 +351,36 @@ abstract class FlickrCliCommand extends Command
             throw new SignalException('pcntl_signal function not found. You need to install pcntl PHP extention.');
         }
 
+        //printf("signalHandlerSetup FlickrCliCommand\n");
         declare(ticks=1);
 
-        pcntl_signal(SIGTERM, [$this, 'signalHandler']);
-        /** @uses $this::signalHandler() */
-        pcntl_signal(SIGINT, [$this, 'signalHandler']);
-        /** @uses $this::signalHandler() */
-        pcntl_signal(SIGHUP, [$this, 'signalHandler']);
-        /** @uses $this::signalHandler() */
+        $signalFn = $this->getSignalHandlerFunction();
+
+        pcntl_signal(SIGTERM, $signalFn);
+        pcntl_signal(SIGINT, $signalFn);
+        pcntl_signal(SIGHUP, $signalFn);
     }
 
-    /**
-     * @param int $signal
-     */
-    private function signalHandler(int $signal)
+    public function getSignalHandlerFunction()
     {
-        $this->exit++;
+        //printf("getSignalHandlerFunction FlickrCliCommand\n");
+        /**
+         * @param int $signal
+         */
+        $fn = function (int $signal) {
+            $this->incExit();
 
-        if ($this->exit >= 2) {
-            throw new SignalException(sprintf('Signal %d', $signal));
-        }
+            $msg = sprintf('Signal %d %d', $signal, $this->exit);
+
+            //printf("\nsignal2 FlickrCliCommand %d %d\n", $signal, $this->exit);
+            $this->logger->info($msg);
+
+            if ($this->exit >= 2) {
+                throw new SignalException($msg);
+            }
+        };
+
+        return $fn;
     }
 
     /**

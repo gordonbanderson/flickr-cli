@@ -11,50 +11,23 @@ use Symfony\Component\Console\Input\InputOption;
 use Symfony\Component\Console\Output\OutputInterface;
 use Symfony\Component\Filesystem\Filesystem;
 use Symfony\Component\Yaml\Yaml;
-use Rezzza\Flickr\Metadata;
 use Rezzza\Flickr\ApiFactory;
-use Rezzza\Flickr\Http\GuzzleAdapter as RezzzaGuzzleAdapter;
 use Guzzle\Http\Client as GuzzleHttpClient;
 use Guzzle\Stream\PhpStreamRequestFactory;
-use Monolog\Logger;
 use Rych\ByteSize\ByteSize;
 use TheFox\FlickrCli\FlickrCli;
 
-class DownloadCommand extends FlickrCliCommand
+final class DownloadCommand extends FlickrCliCommand
 {
-    /**
-     * @deprecated
-     * @var int
-     */
-    private $OLDExit;
-
     /**
      * @var string The destination directory for downloaded files. No trailing slash.
      */
-    protected $destinationPath;
-
-    /**
-     * @deprecated
-     * @var Logger General logger.
-     */
-    protected $logger;
-
-    /**
-     * @deprecated
-     * @var Logger Log for information about failed downloads.
-     */
-    protected $loggerFilesFailed;
+    private $destinationPath;
 
     /**
      * @var bool Whether to download even if a local copy already exists.
      */
-    protected $forceDownload;
-
-    /**
-     * @deprecated
-     * @var
-     */
-    private $fs;
+    private $forceDownload;
 
     protected function configure()
     {
@@ -77,26 +50,13 @@ class DownloadCommand extends FlickrCliCommand
         $this->destinationPath = 'photosets';
     }
 
-    private function setupDestination()
-    {
-        $filesystem = new Filesystem();
-
-        // Destination directory. Default to 'photosets'.
-        $customDestDir = $this->getInput()->getOption('destination');
-        if (!empty($customDestDir)) {
-            $this->destinationPath = rtrim($customDestDir, '/');
-        }
-        if (!$filesystem->exists($this->destinationPath)) {
-            $filesystem->mkdir($this->destinationPath, 0755);
-        }
-    }
-
     /**
      * Executes the download command.
      *
      * @param InputInterface $input An InputInterface instance
      * @param OutputInterface $output An OutputInterface instance
      * @return int 0 if everything went fine, or an error code.
+     * @throws Exception
      */
     protected function execute(InputInterface $input, OutputInterface $output): int
     {
@@ -119,12 +79,27 @@ class DownloadCommand extends FlickrCliCommand
         return $exit;
     }
 
+    private function setupDestination()
+    {
+        $filesystem = new Filesystem();
+
+        // Destination directory. Default to 'photosets'.
+        $customDestDir = $this->getInput()->getOption('destination');
+        if (!empty($customDestDir)) {
+            $this->destinationPath = rtrim($customDestDir, '/');
+        }
+        if (!$filesystem->exists($this->destinationPath)) {
+            $filesystem->mkdir($this->destinationPath, 0755);
+        }
+    }
+
     /**
      * Download photos to directories named after the album (i.e. photoset, in the original parlance).
      *
      * @return int
+     * @throws Exception
      */
-    protected function downloadByAlbumTitle(): int
+    private function downloadByAlbumTitle(): int
     {
         $this->getLogger()->info(sprintf('Downloading to Album-based directories in: %s', $this->destinationPath));
 
@@ -184,7 +159,7 @@ class DownloadCommand extends FlickrCliCommand
         }
 
         $filesystem = new Filesystem();
-        $totalDownloaded = 0;
+        $totalBytesDownloaded = 0;
         $totalFiles = 0;
 
         /** @var $photoset SimpleXMLElement */
@@ -216,7 +191,7 @@ class DownloadCommand extends FlickrCliCommand
             $xmlPhotoListPagesTotal = (int)$xmlPhotoList->photoset->attributes()->pages;
             // $xmlPhotoListPhotosTotal = (int)$xmlPhotoList->photoset->attributes()->total;
 
-            $fileCount = 0;
+            $photosetFileCount = 0;
 
             for ($page = 1; $page <= $xmlPhotoListPagesTotal; $page++) {
                 pcntl_signal_dispatch();
@@ -241,24 +216,25 @@ class DownloadCommand extends FlickrCliCommand
                         break;
                     }
 
-                    $this->getLogger()->debug(sprintf('[media] %d/%d photo %s', $page, $fileCount, $photo['id']));
+                    $this->getLogger()->debug(sprintf('[media] %d/%d photo %s', $page, $photosetFileCount, $photo['id']));
                     $downloaded = $this->downloadPhoto($photo, $destinationPath);
                     if ($downloaded && isset($downloaded->filesize)) {
-                        $totalDownloaded += $downloaded->filesize;
+                        $totalBytesDownloaded += $downloaded->filesize;
                     }
-                    $fileCount++;
+                    ++$photosetFileCount;
+                    ++$totalFiles;
                 }
             }
         }
 
-        if ($totalDownloaded > 0) {
+        if ($totalBytesDownloaded > 0) {
             $bytesize = new ByteSize();
-            $totalDownloadedMsg = $bytesize->format($totalDownloaded);
+            $totalDownloadedMsg = $bytesize->format($totalBytesDownloaded);
         } else {
             $totalDownloadedMsg = 0;
         }
 
-        $this->getLogger()->info(sprintf('[main] total downloaded: %d', $totalDownloadedMsg));
+        $this->getLogger()->info(sprintf('[main] total downloaded: %s (%d)', $totalDownloadedMsg, $totalBytesDownloaded));
         $this->getLogger()->info(sprintf('[main] total files:      %d', $totalFiles));
         $this->getLogger()->info('[main] exit');
 
@@ -312,8 +288,6 @@ class DownloadCommand extends FlickrCliCommand
         $originalFormat = (string)$xmlPhoto->photo->attributes()->originalformat;
         $description = (string)$xmlPhoto->photo->description;
         $media = (string)$xmlPhoto->photo->attributes()->media;
-        //$ownerPathalias = (string)$xmlPhoto->photo->owner->attributes()->path_alias;
-        //$ownerNsid = (string)$xmlPhoto->photo->owner->attributes()->nsid;
 
         // Set the filename.
         if (empty($basename)) {
@@ -340,48 +314,7 @@ class DownloadCommand extends FlickrCliCommand
         $url = sprintf($urlFormat, $farm, $server, $id, $originalSecret, $originalFormat);
 
         if ($media == 'video') {
-            // $url = 'http://www.flickr.com/photos/'.$ownerPathalias.'/'.$id.'/play/orig/'.$originalSecret.'/';
-            // $url = 'https://www.flickr.com/video_download.gne?id='.$id;
-
-            // $contentDispositionHeaderArray = array();
-
-            // try{
-            // 	$client = new GuzzleHttpClient();
-            // 	$request = $client->head($url);
-            // 	$response = $request->send();
-
-            // 	$url = $response->getEffectiveUrl();
-
-            // 	$contentDispositionHeader = $response->getHeader('content-disposition');
-            // 	$contentDispositionHeaderArray = $contentDispositionHeader->toArray();
-            // }
-            // catch(Exception $e){
-            // $this->log->info(sprintf('[%s] %s, farm %s, server %s, %s HEAD FAILED: %s',
-            // 	$media, $id, $farm, $server, $fileName, $e->getMessage()));
-            // 	$this->logFilesFailed->error($id.'.'.$originalFormat);
-
-            // 	continue;
-            // }
-
-            // if(count($contentDispositionHeaderArray)){
-            // 	$pos = strpos(strtolower($contentDispositionHeaderArray[0]), 'filename=');
-            // 	if($pos !== false){
-            // 		$pathinfo = pathinfo(substr($contentDispositionHeaderArray[0], $pos + 9));
-            // 		if(isset($pathinfo['extension'])){
-            // 			$originalFormat = $pathinfo['extension'];
-            // 			$fileName = ($title ? $title : $id).'.'.$originalFormat;
-            // 			$filePath = $dstDirFullPath.'/'.$fileName;
-            // 			$filePathTmp = $dstDirFullPath.'/'.$id.'.'.$originalFormat.'.tmp';
-
-            // 			if($filesystem->exists($filePath)){
-            // 				continue;
-            // 			}
-            // 		}
-            // 	}
-            // }
-
             $this->getLogger()->error('video not supported yet');
-            //$this->loggerFilesFailed->error($id . ': video not supported yet');
             return false;
         }
 
@@ -402,7 +335,6 @@ class DownloadCommand extends FlickrCliCommand
                 $e->getMessage()
             ))
             ;
-            //$this->loggerFilesFailed->error($id . '.' . $originalFormat);
 
             return false;
         }
@@ -438,7 +370,7 @@ class DownloadCommand extends FlickrCliCommand
         }
         while (!$stream->feof()) {
             pcntl_signal_dispatch();
-            if ($this->getExit()) {
+            if ($this->getExit() >= 2) {
                 break;
             }
 
@@ -491,18 +423,26 @@ class DownloadCommand extends FlickrCliCommand
         fclose($fh);
         print "\n";
 
+        // Inform the user about the signal.
+        if ($this->getExit()) {
+            $this->getLogger()->info(sprintf('Catched a Signal while downloading. [%d]', $this->getExit()));
+        }
+
+        if (!$filesystem->exists($filePathTmp)) {
+            $this->getLogger()->error(sprintf('[%s] %s FAILED: temp file does not exist: %s', $media, $id, $filePathTmp));
+            return false;
+        }
+
         $fileTmpSize = filesize($filePathTmp);
 
-        if ($this->getExit()) {
-            $filesystem->remove($filePathTmp);
-        } elseif (($size && $fileTmpSize != $size) || $fileTmpSize <= 1024) {
+        if (($size && $fileTmpSize != $size) || $fileTmpSize <= 1024) {
             $filesystem->remove($filePathTmp);
 
             $this->getLogger()->error(sprintf('[%s] %s FAILED: temp file size wrong: %d', $media, $id, $fileTmpSize));
         } else {
             // Rename to its final destination, and return the photo metadata.
             $filesystem->rename($filePathTmp, $filePath, $this->forceDownload);
-            $xmlPhoto->photo->filesize = $size;
+            $xmlPhoto->photo->filesize = $fileTmpSize;
 
             /** @var SimpleXMLElement $photo */
             $photo = $xmlPhoto->photo;
@@ -525,12 +465,22 @@ class DownloadCommand extends FlickrCliCommand
         // 1. Download any photos not in a set.
         $notInSetPage = 1;
         do {
+            pcntl_signal_dispatch();
+            if ($this->getExit()) {
+                break;
+            }
+
             $notInSet = $apiFactory->call('flickr.photos.getNotInSet', ['page' => $notInSetPage]);
             $pages = (int)$notInSet->photos['pages'];
             $this->getLogger()->info(sprintf('Not in set p%s/%d', $notInSetPage, $pages));
 
             $notInSetPage++;
             foreach ($notInSet->photos->photo as $photo) {
+                pcntl_signal_dispatch();
+                if ($this->getExit()) {
+                    break;
+                }
+
                 $this->downloadPhotoById($photo);
             }
         } while ($notInSetPage <= $notInSet->photos['pages']);
@@ -538,14 +488,29 @@ class DownloadCommand extends FlickrCliCommand
         // 2. Download all photos in all sets.
         $setsPage = 1;
         do {
+            pcntl_signal_dispatch();
+            if ($this->getExit()) {
+                break;
+            }
+
             $sets = $apiFactory->call('flickr.photosets.getList', ['page' => $setsPage]);
             $pages = (int)$sets->photosets['pages'];
             $this->getLogger()->info(sprintf('Sets p%d/%d', $setsPage, $pages));
 
             foreach ($sets->photosets->photoset as $set) {
+                pcntl_signal_dispatch();
+                if ($this->getExit()) {
+                    break;
+                }
+
                 // Loop through all pages in this set.
                 $setPhotosPage = 1;
                 do {
+                    pcntl_signal_dispatch();
+                    if ($this->getExit()) {
+                        break;
+                    }
+
                     $params = [
                         'photoset_id' => $set['id'],
                         'page' => $setPhotosPage,
@@ -565,6 +530,11 @@ class DownloadCommand extends FlickrCliCommand
                     ))
                     ;
                     foreach ($setPhotos->photoset->photo as $photo) {
+                        pcntl_signal_dispatch();
+                        if ($this->getExit()) {
+                            break;
+                        }
+
                         $this->downloadPhotoById($photo);
                     }
                     $setPhotosPage++;
@@ -580,12 +550,21 @@ class DownloadCommand extends FlickrCliCommand
      * Download a single photo.
      *
      * @param SimpleXMLElement $photo Basic photo metadata.
+     * @throws Exception
      */
     private function downloadPhotoById(SimpleXMLElement $photo)
     {
         $id = $photo['id'];
         $idHash = md5($id);
-        $destinationPath = sprintf('%s/%s/%s/%s/%s/%s', $this->destinationPath, $idHash[0], $idHash[1], $idHash[2], $idHash[3], $id);
+        $destinationPath = sprintf(
+            '%s/%s%s/%s%s/%s',
+            $this->destinationPath,
+            $idHash[0],
+            $idHash[1],
+            $idHash[2],
+            $idHash[3],
+            $id
+        );
 
         $filesystem = new Filesystem();
         if (!$filesystem->exists($destinationPath)) {
@@ -629,10 +608,6 @@ class DownloadCommand extends FlickrCliCommand
 
             // Tags
             if (isset($photo->tags->tag)) {
-                //$tagsFn = $this->getTagMappingFunction();
-                //$tags = (array)$photo->tags;
-                //$metadata['tags'] = array_map($tagsFn, $tags);
-
                 foreach ($photo->tags->tag as $tag) {
                     $metadata['tags'][] = [
                         'id' => (string)$tag['id'],

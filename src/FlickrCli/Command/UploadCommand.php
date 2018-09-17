@@ -17,7 +17,7 @@ use Guzzle\Http\Client as GuzzleHttpClient;
 use Rych\ByteSize\ByteSize;
 use TheFox\FlickrCli\FlickrCli;
 
-class UploadCommand extends FlickrCliCommand
+final class UploadCommand extends FlickrCliCommand
 {
     protected function configure()
     {
@@ -69,10 +69,6 @@ class UploadCommand extends FlickrCliCommand
         $recursive = $input->getOption('recursive');
         $dryrun = $input->getOption('dry-run');
 
-        //$metadata = new Metadata($config['flickr']['consumer_key'], $config['flickr']['consumer_secret']);
-        //$metadata->setOauthAccess($config['flickr']['token'], $config['flickr']['token_secret']);
-
-        //$guzzleAdapter = new RezzzaGuzzleAdapter();
         $guzzleAdapterVerbose = new RezzzaGuzzleAdapter();
         $guzzleAdapterClient = $guzzleAdapterVerbose->getClient();
         $guzzleAdapterClientConfig = $guzzleAdapterClient->getConfig();
@@ -86,7 +82,18 @@ class UploadCommand extends FlickrCliCommand
         $uploadedPrev = 0;
         $uploadedDiffPrev = [0, 0, 0, 0, 0];
 
-        $curlOptions[CURLOPT_PROGRESSFUNCTION] = function ($ch, $dlTotal = 0, $dlNow = 0, $ulTotal = 0, $ulNow = 0) use ($timePrev, $uploadedTotal, $uploadedPrev, $uploadedDiffPrev) {
+        $curlOptions[CURLOPT_PROGRESSFUNCTION] = function (
+            $ch,
+            $dlTotal = 0,
+            $dlNow = 0,
+            $ulTotal = 0,
+            $ulNow = 0
+        ) use (
+            $timePrev,
+            $uploadedTotal,
+            $uploadedPrev,
+            $uploadedDiffPrev
+        ) {
 
             $uploadedDiff = $ulNow - $uploadedPrev;
             $uploadedPrev = $ulNow;
@@ -223,6 +230,11 @@ class UploadCommand extends FlickrCliCommand
 
         $directories = $input->getArgument('directory');
         foreach ($directories as $argDir) {
+            pcntl_signal_dispatch();
+            if ($this->getExit()) {
+                break;
+            }
+
             if ($configUploadedBaseDir) {
                 $argDirReplaced = str_replace('/', '_', $argDir);
                 $uploadBaseDirPath = sprintf('%s/%s', $configUploadedBaseDir, $argDirReplaced);
@@ -249,7 +261,6 @@ class UploadCommand extends FlickrCliCommand
                 $dirRelativePath = $fileRelativePath->getPath();
 
                 $uploadFileSize = filesize($filePath);
-                //$uploadFileSizeLen = strlen(number_format($uploadFileSize));
                 $uploadFileSizeFormatted = $bytesize->format($uploadFileSize);
 
                 $uploadDirPath = '';
@@ -284,7 +295,8 @@ class UploadCommand extends FlickrCliCommand
                     continue;
                 }
 
-                $this->getLogger()->info(sprintf('[file] upload "%s" %s', $fileRelativePathStr, $uploadFileSizeFormatted));
+                $msg = sprintf('[file] upload "%s" %s', $fileRelativePathStr, $uploadFileSizeFormatted);
+                $this->getLogger()->info($msg);
                 try {
                     $xml = $apiFactoryVerbose->upload($filePath, $fileName, $description, $tags);
 
@@ -304,21 +316,22 @@ class UploadCommand extends FlickrCliCommand
                 }
 
                 if ($successful) {
-                    $logLine = 'OK';
+                    $this->getLogger()->info(sprintf('[file] status: OK - ID %s', $photoId));
+                    
                     $totalFilesUploaded++;
 
                     if ($uploadDirPath) {
-                        $this->getLogger()->info(sprintf('[file] move to uploaded dir: %s', $uploadDirPath));
-
                         $filesystem = new Filesystem();
                         $filesystem->rename($filePath, sprintf('%s/%s', $uploadDirPath, $fileName));
+                        
+                        $this->getLogger()->info(sprintf('[file] moved to uploaded dir: %s', $uploadDirPath));
                     }
                 } else {
-                    $logLine = 'FAILED';
+                    $this->getLogger()->error(sprintf('[file] status: FAILED - ID %s', $photoId));
+                    
                     $fileErrors++;
                     $filesFailed[] = $fileRelativePathStr;
                 }
-                $this->getLogger()->info(sprintf('[file] status: %s - ID %s', $logLine, $photoId));
 
                 if (!$successful) {
                     continue;
@@ -326,6 +339,11 @@ class UploadCommand extends FlickrCliCommand
 
                 if ($photosetsNew) {
                     foreach ($photosetsNew as $photosetTitle) {
+                        pcntl_signal_dispatch();
+                        if ($this->getExit()) {
+                            break;
+                        }
+
                         $this->getLogger()->info(sprintf('[photoset] create %s ... ', $photosetTitle));
 
                         $xml = null;
@@ -335,7 +353,8 @@ class UploadCommand extends FlickrCliCommand
                                 'primary_photo_id' => $photoId,
                             ]);
                         } catch (Exception $e) {
-                            $this->getLogger()->critical(sprintf('[photoset] create %s FAILED: %s', $photosetTitle, $e->getMessage()));
+                            $msg = sprintf('[photoset] create %s FAILED: %s', $photosetTitle, $e->getMessage());
+                            $this->getLogger()->critical($msg);
                             return 1;
                         }
 
@@ -343,10 +362,12 @@ class UploadCommand extends FlickrCliCommand
                             $photosetId = (int)$xml->photoset->attributes()->id;
                             $photosets[] = $photosetId;
 
-                            $this->getLogger()->info(sprintf('[photoset] create %s OK - ID %s', $photosetTitle, $photosetId));
+                            $msg = sprintf('[photoset] create %s OK - ID %s', $photosetTitle, $photosetId);
+                            $this->getLogger()->info($msg);
                         } else {
                             $code = (int)$xml->err->attributes()->code;
-                            $this->getLogger()->critical(sprintf('[photoset] create %s FAILED: %s', $photosetTitle, $code));
+                            $msg = sprintf('[photoset] create %s FAILED: %s', $photosetTitle, $code);
+                            $this->getLogger()->critical($msg);
                             return 1;
                         }
                     }
@@ -358,6 +379,11 @@ class UploadCommand extends FlickrCliCommand
 
                     $logLine = [];
                     foreach ($photosets as $photosetId) {
+                        pcntl_signal_dispatch();
+                        if ($this->getExit()) {
+                            break;
+                        }
+
                         $logLine[] = substr($photosetId, -5);
 
                         try {

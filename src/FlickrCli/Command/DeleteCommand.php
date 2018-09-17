@@ -8,7 +8,7 @@ use Symfony\Component\Console\Input\InputArgument;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
 
-class DeleteCommand extends FlickrCliCommand
+final class DeleteCommand extends FlickrCliCommand
 {
     protected function configure()
     {
@@ -82,10 +82,23 @@ class DeleteCommand extends FlickrCliCommand
                     $fileCount++;
                     $id = (string)$photo->attributes()->id;
                     try {
-                        $apiFactory->call('flickr.photos.delete', ['photo_id' => $id]);
+                        /** @var SimpleXMLElement $deleteResponse */
+                        $deleteResponse = $apiFactory->call('flickr.photos.delete', ['photo_id' => $id]);
+                        $statElement = $deleteResponse->attributes()->stat;
+                        $statStr = (string)$statElement;
+                        if ('ok' !== $statStr) {
+                            throw new \RuntimeException(sprintf('stat: %s', $statStr));
+                        }
                         $this->getLogger()->info(sprintf('[photo] %d/%d deleted %s', $page, $fileCount, $id));
                     } catch (Exception $e) {
-                        $this->getLogger()->info(sprintf('[photo] %d/%d delete %s FAILED: %s', $page, $fileCount, $id, $e->getMessage()));
+                        $msg = sprintf(
+                            '[photo] %d/%d delete %s FAILED: %s',
+                            $page,
+                            $fileCount,
+                            $id,
+                            $e->getMessage()
+                        );
+                        $this->getLogger()->error($msg);
                     }
                 }
             }

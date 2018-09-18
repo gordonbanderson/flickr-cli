@@ -20,7 +20,7 @@
     ],
     "require": {
         "php": "^7.0",
-        "rezzza/flickr": "dev-master",
+        "rezzza/flickr": "dev-ss4",
         "symfony/yaml": "^2.3",
         "symfony/console": "^4",
         "symfony/filesystem": "^4",

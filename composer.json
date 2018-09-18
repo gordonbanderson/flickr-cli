@@ -10,6 +10,12 @@
         "Photo",
         "CLI"
     ],
+    "repositories": [
+        {
+            "type": "vcs",
+            "url": "https://github.com/gordonbanderson/flickr-1.git"
+        }
+    ],
     "homepage": "https://github.com/TheFox/flickr-cli",
     "authors": [
         {
